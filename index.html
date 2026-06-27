@@ -183,6 +183,7 @@
 
 /* ---------- localStorage namespace ---------- */
 var NS = 'RENTSYS_';
+var DEFAULT_API = 'https://script.google.com/macros/s/AKfycbz1zJ0R3y6IpnQ6xIcg-sRS55iIOImU7WdYsCeFIFpEnd-s01BgryOTKzki7tP2xlLx/exec';
 function lsGet(k){ try{ return localStorage.getItem(NS+k); }catch(e){ return null; } }
 function lsSet(k,v){ try{ localStorage.setItem(NS+k,v); }catch(e){} }
 
@@ -199,7 +200,7 @@ function loadDB(){
   if(!DB.settings) DB.settings={ user:'admin', pass:'1234' };
   if(DB.settings.bizName==null) DB.settings.bizName='';
   if(DB.settings.bizPhone==null) DB.settings.bizPhone='';
-  if(DB.settings.apiUrl==null) DB.settings.apiUrl='';
+  if(!DB.settings.apiUrl) DB.settings.apiUrl=DEFAULT_API;
   if(DB.settings.cloudUser==null) DB.settings.cloudUser='admin';
   var i;
   for(i=0;i<DB.lands.length;i++){ var L=DB.lands[i];
@@ -234,7 +235,7 @@ function cloudCall(action, extra, cb){
 function cloudLogin(){
   var url=el('cl_url').value.trim(), u=el('cl_user').value.trim(), p=el('cl_pass').value;
   if(!url){ toast('กรุณาใส่ Web App URL'); return; }
-  DB.settings.apiUrl=url; DB.settings.cloudUser=u; saveDBLocal();
+  DB.settings.apiUrl=url; DB.settings.cloudUser=u; saveDBLocal(); lsSet('cloudPass', p);
   setSync('กำลังเชื่อมต่อ...');
   if(!window.fetch){ toast('เบราว์เซอร์ไม่รองรับ'); return; }
   fetch(url,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({action:'login',user:u,pass:p})})
@@ -244,7 +245,21 @@ function cloudLogin(){
      else { toast('เชื่อมต่อไม่สำเร็จ: '+(j.error||'')); setSync('เชื่อมต่อล้มเหลว'); }
      renderSet();
    })
-   .catch(function(e){ toast('เชื่อมต่อไม่ได้ ตรวจ URL/อินเทอร์เน็ต'); setSync('เชื่อมต่อล้มเหลว'); });
+   .catch(function(e){ toast('เชื่อมต่อไม่ได้: '+String(e)); setSync('เชื่อมต่อล้มเหลว'); });
+}
+function cloudTest(){
+  var url=el('cl_url').value.trim();
+  if(!url){ toast('ใส่ Web App URL ก่อน'); return; }
+  if(url.indexOf('/exec')<0){ alert('⚠️ URL ต้องลงท้ายด้วย /exec\nURL ปัจจุบัน:\n'+url); return; }
+  setSync('กำลังทดสอบ...');
+  if(!window.fetch){ alert('เบราว์เซอร์นี้ไม่รองรับ'); return; }
+  fetch(url).then(function(r){ return r.text(); }).then(function(t){
+    setSync('');
+    alert('✅ แอปเชื่อมถึง backend ได้\n\nผลที่ได้:\n'+t+'\n\nถ้าเห็น "users":true,"data":true แปลว่าพร้อม กดเชื่อมต่อได้เลย\nถ้า false = ยังไม่ได้รัน setup / ยังไม่ Deploy เวอร์ชันใหม่');
+  }).catch(function(e){
+    setSync('');
+    alert('❌ แอปเชื่อมถึง backend ไม่ได้: '+String(e)+'\n\nสาเหตุที่พบบ่อย:\n1) URL ไม่ลงท้าย /exec หรือมีตัวอักษรเกิน\n2) Deploy ไม่ได้ตั้ง Who has access = Anyone\n3) เปิดแอปจากไฟล์ในเครื่อง (file://) — ลองเปิดผ่านลิงก์ GitHub Pages (https) แทน');
+  });
 }
 function cloudPush(){
   if(!cloudConnected()) return;
@@ -393,7 +408,17 @@ function doLogin(){
 }
 function lockNow(){ lsSet('token',''); el('app').style.display='none'; el('loginGate').style.display='flex'; el('lgPass').value=''; el('lgMsg').textContent=''; }
 function checkSession(){ return lsGet('token') && lsGet('token')===sessionToken(); }
-function showApp(){ el('loginGate').style.display='none'; el('app').style.display='block'; go('dash'); if(cloudConnected()){ setSync('เชื่อมต่ออยู่'); cloudPull(true); } }
+function showApp(){ el('loginGate').style.display='none'; el('app').style.display='block'; go('dash'); cloudAutoConnect(); }
+function cloudAutoConnect(){
+  if(!DB.settings.apiUrl){ return; }
+  if(cloudConnected()){ setSync('เชื่อมต่ออยู่'); cloudPull(true); return; }
+  if(!window.fetch){ return; }
+  setSync('กำลังเชื่อมต่อคลาวด์...');
+  fetch(DB.settings.apiUrl,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({action:'login',user:DB.settings.cloudUser||'admin',pass:(lsGet('cloudPass')||'1234')})})
+   .then(function(r){ return r.json(); })
+   .then(function(j){ if(j.ok){ lsSet('cloudToken',j.token); setSync('เชื่อมต่อแล้ว'); cloudPull(true); } else { setSync('แตะ "ตั้งค่า" เพื่อเชื่อมคลาวด์'); } })
+   .catch(function(e){ setSync(''); });
+}
 
 /* ============================================================
    NAV
@@ -1476,6 +1501,7 @@ function renderSet(){
   h+='<div class="grid"><div class="field"><label class="f">ชื่อผู้ใช้คลาวด์</label><input class="inp" id="cl_user" value="'+esc(DB.settings.cloudUser||'admin')+'"></div>';
   h+='<div class="field"><label class="f">รหัสผ่าน</label><input class="inp" id="cl_pass" type="password" placeholder="'+(connected?'(เชื่อมต่ออยู่ ไม่ต้องกรอกซ้ำ)':'')+'"></div></div>';
   h+='<div class="row-actions"><button class="btn" onclick="cloudLogin()">เชื่อมต่อ &amp; ดึงข้อมูล</button>';
+  h+='<button class="btn alt" onclick="cloudTest()">🔌 ทดสอบการเชื่อมต่อ</button>';
   if(connected){ h+='<button class="btn alt" onclick="cloudPull(false)">⬇ ดึงจากคลาวด์</button><button class="btn alt" onclick="cloudPush()">⬆ อัปโหลดเดี๋ยวนี้</button><button class="btn grey" onclick="cloudDisconnect()">ตัดการเชื่อมต่อ</button>'; }
   h+='</div>';
   h+='<div class="mini" id="syncStatusLine" style="margin-top:8px">'+(connected?'สถานะ: เชื่อมต่ออยู่':'ยังไม่ได้เชื่อมต่อ')+'</div>';
