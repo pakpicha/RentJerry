@@ -185,6 +185,7 @@
 var NS = 'RENTSYS_';
 var DEFAULT_API = 'https://script.google.com/macros/s/AKfycbz1zJ0R3y6IpnQ6xIcg-sRS55iIOImU7WdYsCeFIFpEnd-s01BgryOTKzki7tP2xlLx/exec';
 var SHARED_KEY = 'rentkey_chokchai_8f3a2c';
+var APP_VER = '2026-06-27 • cloud-sync v3';
 function lsGet(k){ try{ return localStorage.getItem(NS+k); }catch(e){ return null; } }
 function lsSet(k,v){ try{ localStorage.setItem(NS+k,v); }catch(e){} }
 
@@ -259,10 +260,40 @@ function cloudPush(){
   if(!cloudConnected()) return;
   if(!window.fetch){ setSync('เบราว์เซอร์ไม่รองรับ'); return; }
   setSync('กำลังบันทึก...');
-  var body=JSON.stringify({action:'save', key:SHARED_KEY, user:(DB.settings.cloudUser||'admin'), json:JSON.stringify(DB), updatedAt:(DB.updatedAt||Date.now())});
-  fetch(DB.settings.apiUrl,{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain;charset=utf-8'},body:body})
-   .then(function(){ setSync('ซิงก์แล้ว '+nowHM()); })
-   .catch(function(){ setSync('บันทึกออฟไลน์ไว้ (เน็ตขัดข้อง)'); });
+  var payload=JSON.stringify({action:'save', key:SHARED_KEY, user:(DB.settings.cloudUser||'admin'), json:JSON.stringify(DB), updatedAt:(DB.updatedAt||Date.now())});
+  var url=DB.settings.apiUrl;
+  fetch(url,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:payload})
+   .then(function(r){ return r.json(); })
+   .then(function(j){ if(j&&j.ok){ setSync('ซิงก์แล้ว '+nowHM()); } else { setSync('บันทึกไม่สำเร็จ'); } })
+   .catch(function(e){
+     fetch(url,{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain;charset=utf-8'},body:payload})
+      .then(function(){ setSync('ซิงก์แล้ว '+nowHM()); })
+      .catch(function(){ setSync('บันทึกออฟไลน์ไว้ (เน็ตขัดข้อง)'); });
+   });
+}
+function cloudVerify(){
+  var url=(el('cl_url')?el('cl_url').value.replace(/^\s+|\s+$/g,''):DB.settings.apiUrl);
+  if(!url){ toast('ยังไม่มี Web App URL'); return; }
+  var mark='CHECK_'+Date.now();
+  setSync('กำลังตรวจสอบ...');
+  if(!window.fetch){ alert('เบราว์เซอร์ไม่รองรับ'); return; }
+  fetch(url,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({action:'save',key:SHARED_KEY,user:'__verify__',json:mark,updatedAt:Date.now()})})
+   .then(function(r){ return r.json(); })
+   .then(function(j){
+     if(j&&j.ok){
+       fetch(url,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({action:'load',key:SHARED_KEY,user:'__verify__'})})
+        .then(function(r){ return r.json(); })
+        .then(function(k){ setSync('');
+          if(k.ok && k.json===mark) alert('✅ เชื่อมต่อและบันทึกลงชีตได้จริง!\nระบบพร้อมใช้งาน 100%');
+          else alert('บันทึกได้ แต่ค่าอ่านกลับไม่ตรง:\n'+JSON.stringify(k)); })
+        .catch(function(e){ setSync(''); alert('✅ บันทึกได้ (อ่านกลับติด CORS)\nเปิดชีตแท็บ Data ดูค่า '+mark+' ถ้ามี = ใช้งานได้'); });
+     } else { setSync(''); alert('❌ บันทึกไม่สำเร็จ: '+((j&&j.error)||'')+'\n\nสาเหตุ: ยังไม่ได้ Deploy โค้ด Code.gs ใหม่\nไปที่ Manage deployments ▸ แก้ ▸ New version'); }
+   })
+   .catch(function(e){
+     fetch(url,{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({action:'save',key:SHARED_KEY,user:'__verify__',json:mark,updatedAt:Date.now()})})
+      .then(function(){ setSync(''); alert('ส่งข้อมูลทดสอบแล้ว (อ่านผลไม่ได้เพราะ CORS)\nเปิดชีตแท็บ Data ดูว่ามีแถว __verify__ ค่า '+mark+' ไหม\nถ้ามี = ใช้งานได้'); })
+      .catch(function(){ setSync(''); alert('❌ เชื่อมต่อ backend ไม่ได้: '+String(e)); });
+   });
 }
 function cloudPull(silent){
   if(!cloudConnected()){ if(!silent) toast('ยังไม่ได้เชื่อมต่อคลาวด์'); return; }
@@ -1492,10 +1523,12 @@ function renderSet(){
   h+='<div class="field"><label class="f">รหัสผ่าน</label><input class="inp" id="cl_pass" type="password" placeholder="'+(connected?'(เชื่อมต่ออยู่ ไม่ต้องกรอกซ้ำ)':'')+'"></div></div>';
   h+='<div class="row-actions"><button class="btn" onclick="cloudLogin()">เชื่อมต่อ &amp; ดึงข้อมูล</button>';
   h+='<button class="btn alt" onclick="cloudTest()">🔌 ทดสอบการเชื่อมต่อ</button>';
+  h+='<button class="btn alt" onclick="cloudVerify()">🧪 ตรวจสอบการบันทึกจริง</button>';
   if(connected){ h+='<button class="btn alt" onclick="cloudPull(false)">⬇ ดึงจากคลาวด์</button><button class="btn alt" onclick="cloudPush()">⬆ อัปโหลดเดี๋ยวนี้</button><button class="btn grey" onclick="cloudDisconnect()">ตัดการเชื่อมต่อ</button>'; }
   h+='</div>';
   h+='<div class="mini" id="syncStatusLine" style="margin-top:8px">'+(connected?'สถานะ: เชื่อมต่ออยู่':'ยังไม่ได้เชื่อมต่อ')+'</div>';
   h+='<div class="mini" style="margin-top:6px;color:var(--muted)">ตั้งค่า backend: สร้าง Google Sheet → Apps Script → วางไฟล์ Code.gs → รัน setup → Deploy เป็น Web app → คัดลอก URL มาวางที่นี่</div>';
+  h+='<div class="mini" style="margin-top:6px;color:var(--muted)">เวอร์ชันแอป: '+APP_VER+'</div>';
   h+='</div>';
 
   h+='<div class="card"><h2>สำรอง / กู้คืนข้อมูล</h2><div class="sub">ดาวน์โหลดไฟล์สำรอง หรือวางข้อมูลเพื่อกู้คืน</div>';
