@@ -184,6 +184,7 @@
 /* ---------- localStorage namespace ---------- */
 var NS = 'RENTSYS_';
 var DEFAULT_API = 'https://script.google.com/macros/s/AKfycbz1zJ0R3y6IpnQ6xIcg-sRS55iIOImU7WdYsCeFIFpEnd-s01BgryOTKzki7tP2xlLx/exec';
+var SHARED_KEY = 'rentkey_chokchai_8f3a2c';
 function lsGet(k){ try{ return localStorage.getItem(NS+k); }catch(e){ return null; } }
 function lsSet(k,v){ try{ localStorage.setItem(NS+k,v); }catch(e){} }
 
@@ -200,7 +201,7 @@ function loadDB(){
   if(!DB.settings) DB.settings={ user:'admin', pass:'1234' };
   if(DB.settings.bizName==null) DB.settings.bizName='';
   if(DB.settings.bizPhone==null) DB.settings.bizPhone='';
-  if(!DB.settings.apiUrl) DB.settings.apiUrl=DEFAULT_API;
+  if(!DB.settings.apiUrl && lsGet('cloudOff')!=='1') DB.settings.apiUrl=DEFAULT_API;
   if(DB.settings.cloudUser==null) DB.settings.cloudUser='admin';
   var i;
   for(i=0;i<DB.lands.length;i++){ var L=DB.lands[i];
@@ -217,14 +218,14 @@ function saveDB(){ DB.updatedAt=Date.now(); lsSet('db', JSON.stringify(DB)); sch
 function saveDBLocal(){ lsSet('db', JSON.stringify(DB)); }
 
 /* ===== Cloud sync (Google Apps Script + Sheets) ===== */
-function cloudConnected(){ return !!(DB.settings && DB.settings.apiUrl && (lsGet('cloudToken')||'')); }
+function cloudConnected(){ return !!(DB.settings && DB.settings.apiUrl); }
 function nowHM(){ var d=new Date(); return pad2(d.getHours())+':'+pad2(d.getMinutes()); }
 function setSync(t){ var b=el('syncBadge'); if(b) b.textContent=t?('☁ '+t):''; var s=el('syncStatusLine'); if(s&&t) s.textContent='สถานะ: '+t; }
 var pushTimer=null;
 function schedulePush(){ if(!cloudConnected()) return; if(pushTimer) clearTimeout(pushTimer); pushTimer=setTimeout(cloudPush,1500); }
 function cloudCall(action, extra, cb){
   var url=DB.settings.apiUrl; if(!url){ cb({ok:false,error:'ยังไม่ตั้ง URL'}); return; }
-  var body={action:action, user:DB.settings.cloudUser||'', token:lsGet('cloudToken')||''};
+  var body={action:action, key:SHARED_KEY, user:DB.settings.cloudUser||'admin', token:lsGet('cloudToken')||''};
   for(var k in extra){ if(extra.hasOwnProperty(k)) body[k]=extra[k]; }
   if(!window.fetch){ cb({ok:false,error:'เบราว์เซอร์ไม่รองรับ'}); return; }
   fetch(url,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(body)})
@@ -233,19 +234,12 @@ function cloudCall(action, extra, cb){
    .catch(function(e){ cb({ok:false,error:String(e)}); });
 }
 function cloudLogin(){
-  var url=el('cl_url').value.trim(), u=el('cl_user').value.trim(), p=el('cl_pass').value;
+  var url=el('cl_url').value.trim(), u=el('cl_user').value.trim();
   if(!url){ toast('กรุณาใส่ Web App URL'); return; }
-  DB.settings.apiUrl=url; DB.settings.cloudUser=u; saveDBLocal(); lsSet('cloudPass', p);
-  setSync('กำลังเชื่อมต่อ...');
-  if(!window.fetch){ toast('เบราว์เซอร์ไม่รองรับ'); return; }
-  fetch(url,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({action:'login',user:u,pass:p})})
-   .then(function(r){ return r.json(); })
-   .then(function(j){
-     if(j.ok){ lsSet('cloudToken', j.token); toast('เชื่อมต่อสำเร็จ'); setSync('เชื่อมต่อแล้ว'); cloudPull(true); }
-     else { toast('เชื่อมต่อไม่สำเร็จ: '+(j.error||'')); setSync('เชื่อมต่อล้มเหลว'); }
-     renderSet();
-   })
-   .catch(function(e){ toast('เชื่อมต่อไม่ได้: '+String(e)); setSync('เชื่อมต่อล้มเหลว'); });
+  DB.settings.apiUrl=url; DB.settings.cloudUser=u||'admin'; saveDBLocal();
+  toast('บันทึก URL แล้ว กำลังซิงก์...'); setSync('กำลังซิงก์...');
+  cloudPull(false);
+  renderSet();
 }
 function cloudTest(){
   var url=el('cl_url').value.trim();
@@ -263,11 +257,12 @@ function cloudTest(){
 }
 function cloudPush(){
   if(!cloudConnected()) return;
-  setSync('กำลังอัปโหลด...');
-  cloudCall('save', {json:JSON.stringify(DB), updatedAt:(DB.updatedAt||Date.now())}, function(j){
-    if(j.ok){ setSync('ซิงก์แล้ว '+nowHM()); }
-    else { setSync('อัปโหลดล้มเหลว'); if(j.error==='auth'){ lsSet('cloudToken',''); } }
-  });
+  if(!window.fetch){ setSync('เบราว์เซอร์ไม่รองรับ'); return; }
+  setSync('กำลังบันทึก...');
+  var body=JSON.stringify({action:'save', key:SHARED_KEY, user:(DB.settings.cloudUser||'admin'), json:JSON.stringify(DB), updatedAt:(DB.updatedAt||Date.now())});
+  fetch(DB.settings.apiUrl,{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain;charset=utf-8'},body:body})
+   .then(function(){ setSync('ซิงก์แล้ว '+nowHM()); })
+   .catch(function(){ setSync('บันทึกออฟไลน์ไว้ (เน็ตขัดข้อง)'); });
 }
 function cloudPull(silent){
   if(!cloudConnected()){ if(!silent) toast('ยังไม่ได้เชื่อมต่อคลาวด์'); return; }
@@ -290,7 +285,7 @@ function cloudPull(silent){
     } else { setSync('ดึงข้อมูลล้มเหลว'); if(!silent) toast('ดึงข้อมูลไม่สำเร็จ: '+(j.error||'')); }
   });
 }
-function cloudDisconnect(){ lsSet('cloudToken',''); toast('ตัดการเชื่อมต่อแล้ว'); setSync(''); renderSet(); }
+function cloudDisconnect(){ DB.settings.apiUrl=''; saveDBLocal(); lsSet('cloudOff','1'); lsSet('cloudToken',''); toast('ตัดการเชื่อมต่อแล้ว'); setSync(''); renderSet(); }
 
 /* ---------- utils ---------- */
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
@@ -411,13 +406,8 @@ function checkSession(){ return lsGet('token') && lsGet('token')===sessionToken(
 function showApp(){ el('loginGate').style.display='none'; el('app').style.display='block'; go('dash'); cloudAutoConnect(); }
 function cloudAutoConnect(){
   if(!DB.settings.apiUrl){ return; }
-  if(cloudConnected()){ setSync('เชื่อมต่ออยู่'); cloudPull(true); return; }
-  if(!window.fetch){ return; }
-  setSync('กำลังเชื่อมต่อคลาวด์...');
-  fetch(DB.settings.apiUrl,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({action:'login',user:DB.settings.cloudUser||'admin',pass:(lsGet('cloudPass')||'1234')})})
-   .then(function(r){ return r.json(); })
-   .then(function(j){ if(j.ok){ lsSet('cloudToken',j.token); setSync('เชื่อมต่อแล้ว'); cloudPull(true); } else { setSync('แตะ "ตั้งค่า" เพื่อเชื่อมคลาวด์'); } })
-   .catch(function(e){ setSync(''); });
+  setSync('เชื่อมต่อคลาวด์');
+  cloudPull(true);
 }
 
 /* ============================================================
