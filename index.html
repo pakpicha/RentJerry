@@ -56,6 +56,7 @@
   .btn.block{width:100%}
 
   .grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
   @media(max-width:520px){.grid{grid-template-columns:1fr}}
   label.f{display:block;font-size:12.5px;color:var(--muted);font-weight:600;margin:0 0 3px 2px}
   .inp{width:100%;border:1px solid var(--line);border-radius:9px;padding:9px 10px;background:#fbfcfd;color:var(--ink)}
@@ -209,13 +210,9 @@ function loadDB(){
   if(!DB.settings.apiUrl && lsGet('cloudOff')!=='1') DB.settings.apiUrl=DEFAULT_API;
   if(DB.settings.cloudUser==null) DB.settings.cloudUser='admin';
   var i;
-  for(i=0;i<DB.lands.length;i++){ var L=DB.lands[i];
-    if(L.periodStart==null){ L.periodStart = L.nextDue || todayISO(); L.payOffsetMonths = 0; L.payDay = 0; }
-    if(L.payOffsetMonths==null) L.payOffsetMonths=0;
-    if(L.outstanding==null) L.outstanding=0;
-  }
+  for(i=0;i<DB.lands.length;i++){ migratePlot(DB.lands[i]); }
   if(!lsGet('balMig')){
-    for(i=0;i<DB.lands.length;i++){ var Lm=DB.lands[i]; Lm.outstanding = num(Lm.outstanding)+num(Lm.rent); }
+    for(i=0;i<DB.lands.length;i++){ var Pm=DB.lands[i]; var lsm=Pm.leases||[]; for(var mm=0;mm<lsm.length;mm++){ lsm[mm].outstanding=num(lsm[mm].outstanding)+num(lsm[mm].rent); } }
     lsSet('balMig','1');
   }
 }
@@ -486,11 +483,14 @@ function renderDash(){
   var totalLandOutstanding=0, totalRoomOutstanding=0, dueSoon=[], overdue=[], depositHeld=0;
   var i,j;
   for(i=0;i<DB.lands.length;i++){
-    var L=DB.lands[i];
-    var owe=num(L.outstanding); if(owe>0) totalLandOutstanding += owe;
-    var ld=landDue(L); var gap=daysBetween(todayISO(), ld);
-    if(owe>0 && gap<0) overdue.push({type:'land',name:L.name||L.tenantName,info:'ที่ดิน • '+freqLabel(L.frequency),due:ld,extra:'ค้าง '+money(owe)+' บ. (เลย '+(-gap)+' วัน)'});
-    else if(owe>0 && gap<=7) dueSoon.push({type:'land',name:L.name||L.tenantName,info:'ที่ดิน • ครบ '+fmtBEshort(ld),due:ld});
+    var P=DB.lands[i]; var ls=P.leases||[];
+    for(var li=0;li<ls.length;li++){ var L=ls[li];
+      var owe=num(L.outstanding); if(owe>0) totalLandOutstanding += owe;
+      var ld=landDue(L); var gap=daysBetween(todayISO(), ld);
+      var nm=(P.name||'แปลง')+(L.tenantName?(' – '+L.tenantName):'');
+      if(owe>0 && gap<0) overdue.push({type:'land',name:nm,info:'ที่ดิน • '+freqLabel(L.frequency),due:ld,extra:'ค้าง '+money(owe)+' บ. (เลย '+(-gap)+' วัน)'});
+      else if(owe>0 && gap<=7) dueSoon.push({type:'land',name:nm,info:'ที่ดิน • ครบ '+fmtBEshort(ld),due:ld});
+    }
   }
   for(i=0;i<DB.zones.length;i++){
     var Z=DB.zones[i];
@@ -546,94 +546,163 @@ function renderDash(){
 /* ============================================================
    LAND (ที่ดินเช่า)
    ============================================================ */
+/* ---------- helpers: plot (แปลง) → lease (ผู้เช่าย่อย) ---------- */
+function findPlot(id){ for(var i=0;i<DB.lands.length;i++) if(DB.lands[i].id===id) return DB.lands[i]; return null; }
+function findLand(id){ return findPlot(id); }
+function findLease(pid,lid){ var P=findPlot(pid); if(!P) return null; var ls=P.leases||[]; for(var i=0;i<ls.length;i++) if(ls[i].id===lid) return ls[i]; return null; }
+function plotTitle(P){ return P.name||'แปลงที่ดิน'; }
+function fmtArea(rai,ngan,wa){
+  rai=num(rai); ngan=num(ngan); wa=num(wa);
+  if(rai===0&&ngan===0&&wa===0) return '-';
+  var s=''; if(rai) s+=money(rai)+' ไร่ '; if(ngan) s+=ngan+' งาน '; if(wa) s+=money(wa)+' ตร.ว.';
+  return s.replace(/\s+$/,'');
+}
+function normLease(s){
+  if(s.outstanding==null) s.outstanding=0;
+  if(s.payOffsetMonths==null) s.payOffsetMonths=0;
+  if(!s.payments) s.payments=[];
+  if(s.periodStart==null) s.periodStart=todayISO();
+  if(s.frequency==null) s.frequency='monthly';
+  if(s.areaRai==null) s.areaRai=0; if(s.areaNgan==null) s.areaNgan=0; if(s.areaWa==null) s.areaWa=0;
+}
+function migratePlot(P){
+  if(P.leases){
+    var k; for(k=0;k<P.leases.length;k++) normLease(P.leases[k]);
+    if(P.rai==null) P.rai=0; if(P.ngan==null) P.ngan=0; if(P.wa==null) P.wa=0;
+    return;
+  }
+  var lease={ id:uid(),
+    tenantName:P.tenantName||'', phone:P.phone||'', tenantAddr:P.tenantAddr||'',
+    rent:num(P.rent), frequency:P.frequency||'monthly',
+    periodStart:P.periodStart||todayISO(), payOffsetMonths:num(P.payOffsetMonths||0), payDay:num(P.payDay||0),
+    dueOverride:P.dueOverride||null, deferLog:P.deferLog||[], periodNote:P.periodNote||'',
+    outstanding:num(P.outstanding||0), payments:P.payments||[],
+    areaRai:0, areaNgan:0, areaWa:0 };
+  P.leases=[lease];
+  P.rai=num(P.rai||0); P.ngan=num(P.ngan||0); P.wa=num(P.wa||0);
+  delete P.rent; delete P.frequency; delete P.periodStart; delete P.payOffsetMonths; delete P.payDay;
+  delete P.dueOverride; delete P.deferLog; delete P.periodNote; delete P.outstanding; delete P.payments;
+  delete P.tenantName; delete P.phone; delete P.tenantAddr; delete P.nextDue;
+}
+
 function renderLand(){
-  var p=el('page-land'), i;
+  var p=el('page-land'), i, j;
   var h='';
-  h+='<div class="section-title"><h2>ที่ดินเช่า</h2><div class="spacer"></div><button class="btn sm" onclick="landForm()">+ เพิ่มแปลง</button></div>';
-  h+='<div class="hint">ค่าเช่าที่ดิน เก็บได้ทั้ง รายเดือน / ครึ่งปี / รายปี / ราย 3 ปี และกำหนดได้ว่าจะเก็บ <b>ก่อน–ระหว่าง–หลัง</b> รอบเช่า (เช่น จ่ายล่วงหน้า หรือจ่ายปลายรอบ)</div>';
-  if(DB.lands.length===0){ h+='<div class="empty"><div class="big">🌾</div>ยังไม่มีข้อมูลที่ดิน<br><button class="btn sm" style="margin-top:10px" onclick="landForm()">+ เพิ่มแปลงแรก</button></div>'; }
+  h+='<div class="section-title"><h2>ที่ดินเช่า</h2><div class="spacer"></div><button class="btn sm" onclick="plotForm()">+ เพิ่มแปลง</button></div>';
+  h+='<div class="hint">แต่ละแปลงเก็บข้อมูลเนื้อที่/โฉนด/เจ้าของ และ<b>แบ่งให้ผู้เช่าได้หลายราย</b> แต่ละรายมีค่าเช่า รอบ และยอดค้างของตัวเอง</div>';
+  if(DB.lands.length===0){ h+='<div class="empty"><div class="big">🌾</div>ยังไม่มีข้อมูลที่ดิน<br><button class="btn sm" style="margin-top:10px" onclick="plotForm()">+ เพิ่มแปลงแรก</button></div>'; }
   for(i=0;i<DB.lands.length;i++){
-    var L=DB.lands[i], st=landStatus(L);
+    var P=DB.lands[i]; var leases=P.leases||[];
+    var plotOwe=0; for(j=0;j<leases.length;j++) plotOwe+=Math.max(0,num(leases[j].outstanding));
     h+='<div class="item">';
-    h+=' <div class="hd"><div><div class="nm">'+esc(L.name||L.tenantName||'แปลงที่ดิน')+'</div>';
-    h+='   <div class="meta">'+esc(L.tenantName||'-')+(L.phone?(' • ☎ '+esc(L.phone)):'')+'</div></div><div class="spacer"></div>';
-    h+='   <span class="pill '+st.cls+'">'+st.label+'</span></div>';
-    h+=' <div class="kv">';
-    h+='  <span><b>ค่าเช่า</b> '+money(L.rent)+' บ.</span>';
-    h+='  <span><b>รอบ</b> '+freqLabel(L.frequency)+'</span>';
-    h+='  <span><b>จังหวะ</b> '+landTimingAuto(L)+'</span>';
-    if(num(L.outstanding)>0) h+='  <span style="color:var(--red)"><b>ค้าง</b> '+money(L.outstanding)+' บ.</span>';
+    h+=' <div class="hd"><div><div class="nm">'+esc(plotTitle(P))+'</div>';
+    h+='   <div class="meta">เนื้อที่ '+fmtArea(P.rai,P.ngan,P.wa)+' • ผู้เช่า '+leases.length+' ราย</div></div><div class="spacer"></div>';
+    if(plotOwe>0) h+='   <span class="pill red">ค้างรวม '+money(plotOwe)+'</span>';
     h+=' </div>';
-    h+=' <div class="mini" style="margin-top:6px">🗓️ รอบเช่าปัจจุบัน: <b>'+landPeriodLabel(L)+'</b></div>';
-    h+=' <div class="mini">💰 ครบกำหนดจ่ายถัดไป: <b style="color:var(--primary-d)">'+fmtBE(landDue(L))+'</b>'+(L.dueOverride?' <span class="pill amber">เลื่อนแล้ว</span>':'')+'</div>';
-    if(L.deedNo||L.subdistrict||L.coords){
-      h+=' <div class="mini" style="margin-top:6px">';
-      if(L.deedNo) h+='โฉนด '+esc(L.deedNo)+' • ';
-      if(L.subdistrict||L.district||L.province) h+='ต.'+esc(L.subdistrict||'-')+' อ.'+esc(L.district||'-')+' จ.'+esc(L.province||'-')+' ';
-      if(L.coords) h+='• 📍 <a href="https://maps.google.com/?q='+encodeURIComponent(L.coords)+'" target="_blank">พิกัด</a>';
+    if(P.owner||P.deedNo||P.subdistrict||P.coords){
+      h+=' <div class="mini" style="margin-top:2px">';
+      if(P.owner) h+='เจ้าของ '+esc(P.owner)+' • ';
+      if(P.deedNo) h+='โฉนด '+esc(P.deedNo)+' • ';
+      if(P.subdistrict||P.district||P.province) h+='ต.'+esc(P.subdistrict||'-')+' อ.'+esc(P.district||'-')+' จ.'+esc(P.province||'-')+' ';
+      if(P.coords) h+='• 📍 <a href="https://maps.google.com/?q='+encodeURIComponent(P.coords)+'" target="_blank">พิกัด</a>';
       h+=' </div>';
     }
-    if(L.periodNote) h+=' <div class="mini" style="margin-top:4px">📝 '+esc(L.periodNote)+'</div>';
+    for(j=0;j<leases.length;j++){ var L=leases[j]; var st=landStatus(L); var ar=fmtArea(L.areaRai,L.areaNgan,L.areaWa);
+      h+=' <div class="room-line"><div>';
+      h+='  <div style="font-weight:600">'+esc(L.tenantName||'(ว่าง)')+(L.phone?(' <span class="mini">☎ '+esc(L.phone)+'</span>'):'')+'</div>';
+      h+='  <div class="mini">'+money(L.rent)+' บ./'+freqLabel(L.frequency)+(ar!=='-'?(' • เช่า '+ar):'')+' • ครบ '+fmtBEshort(landDue(L))+(L.dueOverride?' (เลื่อน)':'')+'</div>';
+      h+='  </div><div class="spacer"></div>';
+      h+='  <span class="pill '+st.cls+'">'+st.label+'</span>';
+      h+='  <button class="btn sm" onclick="leaseDetail(\''+P.id+'\',\''+L.id+'\')">รับชำระ</button>';
+      h+='  <button class="btn sm alt" onclick="leaseForm(\''+P.id+'\',\''+L.id+'\')">แก้</button>';
+      h+='  <button class="btn sm danger" onclick="leaseDelete(\''+P.id+'\',\''+L.id+'\')">ลบ</button>';
+      h+=' </div>';
+    }
     h+=' <div class="row-actions">';
-    h+='  <button class="btn sm" onclick="landDetail(\''+L.id+'\')">รับชำระ / จัดการยอด</button>';
-    h+='  <button class="btn sm alt" onclick="landForm(\''+L.id+'\')">แก้ไขข้อมูล</button>';
-    h+='  <button class="btn sm danger" onclick="landDelete(\''+L.id+'\')">ลบ</button>';
+    h+='  <button class="btn sm" onclick="leaseForm(\''+P.id+'\')">+ เพิ่มผู้เช่าในแปลงนี้</button>';
+    h+='  <button class="btn sm alt" onclick="plotForm(\''+P.id+'\')">แก้ข้อมูลแปลง</button>';
+    h+='  <button class="btn sm danger" onclick="plotDelete(\''+P.id+'\')">ลบแปลง</button>';
     h+=' </div>';
     h+='</div>';
   }
   p.innerHTML=h;
 }
 
-function findLand(id){ for(var i=0;i<DB.lands.length;i++) if(DB.lands[i].id===id) return DB.lands[i]; return null; }
+function plotForm(id){
+  var P = id?findPlot(id):{ id:uid(), leases:[], rai:0,ngan:0,wa:0 };
+  var isNew=!id;
+  function v(x){ return esc(P[x]!=null?P[x]:''); }
+  var h='';
+  h+='<div class="mh"><h3>'+(isNew?'เพิ่มแปลงที่ดิน':'แก้ข้อมูลแปลง')+'</h3><div class="spacer"></div><button class="x" onclick="closeModal()">×</button></div>';
+  h+='<div class="field"><label class="f">ชื่อแปลง / ชื่อเรียก</label><input class="inp" id="pf_name" value="'+v('name')+'" placeholder="เช่น ที่ดินริมถนน A"></div>';
+  h+='<div class="grid"><div class="field"><label class="f">เจ้าของที่ดิน</label><input class="inp" id="pf_owner" value="'+v('owner')+'"></div>';
+  h+='<div class="field"><label class="f">เลขโฉนด</label><input class="inp" id="pf_deed" value="'+v('deedNo')+'"></div></div>';
+  h+='<div class="mini" style="font-weight:700;margin:6px 2px 4px;color:var(--primary-d)">เนื้อที่ทั้งแปลง</div>';
+  h+='<div class="grid3"><div class="field"><label class="f">ไร่</label><input class="inp" id="pf_rai" inputmode="decimal" value="'+(P.rai||0)+'"></div>';
+  h+='<div class="field"><label class="f">งาน</label><input class="inp" id="pf_ngan" inputmode="numeric" value="'+(P.ngan||0)+'"></div>';
+  h+='<div class="field"><label class="f">ตร.ว.</label><input class="inp" id="pf_wa" inputmode="decimal" value="'+(P.wa||0)+'"></div></div>';
+  h+='<div class="grid"><div class="field"><label class="f">ตำบล</label><input class="inp" id="pf_sub" value="'+v('subdistrict')+'"></div>';
+  h+='<div class="field"><label class="f">อำเภอ</label><input class="inp" id="pf_dist" value="'+v('district')+'"></div></div>';
+  h+='<div class="grid"><div class="field"><label class="f">จังหวัด</label><input class="inp" id="pf_prov" value="'+v('province')+'"></div>';
+  h+='<div class="field"><label class="f">พิกัด (lat,lng)</label><input class="inp" id="pf_coords" value="'+v('coords')+'" placeholder="14.97,102.07"></div></div>';
+  h+='<button class="btn block" onclick="plotSave(\''+P.id+'\','+(isNew?'true':'false')+')">บันทึก</button>';
+  openModal(h);
+}
+function plotSave(id,isNew){
+  var P=isNew?{id:id,leases:[]}:findPlot(id); if(!P){P={id:id,leases:[]};isNew=true;}
+  P.name=el('pf_name').value.trim(); P.owner=el('pf_owner').value.trim(); P.deedNo=el('pf_deed').value.trim();
+  P.rai=num(el('pf_rai').value); P.ngan=num(el('pf_ngan').value); P.wa=num(el('pf_wa').value);
+  P.subdistrict=el('pf_sub').value.trim(); P.district=el('pf_dist').value.trim(); P.province=el('pf_prov').value.trim();
+  P.coords=el('pf_coords').value.trim();
+  if(!P.leases) P.leases=[];
+  if(isNew) DB.lands.push(P);
+  saveDB(); closeModal(); toast('บันทึกแล้ว'); renderLand();
+  if(isNew) leaseForm(P.id);
+}
 
-function landForm(id){
-  var L = id?findLand(id):{ id:uid(), frequency:'monthly', payments:[], outstanding:0, periodStart:todayISO(), payOffsetMonths:0, payDay:0 };
-  var isNew = !id;
+function leaseForm(pid, lid){
+  var P=findPlot(pid); if(!P) return;
+  var L = lid?findLease(pid,lid):{ id:uid(), frequency:'monthly', payments:[], outstanding:0, periodStart:todayISO(), payOffsetMonths:0, payDay:0, areaRai:0,areaNgan:0,areaWa:0 };
+  var isNew=!lid;
   function v(x){ return esc(L[x]!=null?L[x]:''); }
   function opt(val,cur,txt){ return '<option value="'+val+'"'+(cur===val?' selected':'')+'>'+txt+'</option>'; }
   var h='';
-  h+='<div class="mh"><h3>'+(isNew?'เพิ่มแปลงที่ดิน':'แก้ไขข้อมูลที่ดิน')+'</h3><div class="spacer"></div><button class="x" onclick="closeModal()">×</button></div>';
-  h+='<div class="field"><label class="f">ชื่อแปลง / ชื่อเรียก</label><input class="inp" id="lf_name" value="'+v('name')+'" placeholder="เช่น ที่ดินริมถนน A"></div>';
-  h+='<div class="grid">';
-  h+=' <div class="field"><label class="f">ชื่อผู้เช่า</label><input class="inp" id="lf_tenant" value="'+v('tenantName')+'"></div>';
-  h+=' <div class="field"><label class="f">เบอร์โทร</label><input class="inp" id="lf_phone" value="'+v('phone')+'" inputmode="tel"></div>';
-  h+='</div>';
+  h+='<div class="mh"><h3>'+(isNew?'เพิ่มผู้เช่า':'แก้ผู้เช่า')+' – '+esc(plotTitle(P))+'</h3><div class="spacer"></div><button class="x" onclick="closeModal()">×</button></div>';
+  h+='<div class="grid"><div class="field"><label class="f">ชื่อผู้เช่า</label><input class="inp" id="lf_tenant" value="'+v('tenantName')+'"></div>';
+  h+='<div class="field"><label class="f">เบอร์โทร</label><input class="inp" id="lf_phone" value="'+v('phone')+'" inputmode="tel"></div></div>';
   h+='<div class="field"><label class="f">ที่อยู่ผู้เช่า</label><textarea class="inp" id="lf_addr">'+v('tenantAddr')+'</textarea></div>';
-  h+='<div class="grid">';
-  h+=' <div class="field"><label class="f">เจ้าของที่ดิน</label><input class="inp" id="lf_owner" value="'+v('owner')+'"></div>';
-  h+=' <div class="field"><label class="f">เลขโฉนด</label><input class="inp" id="lf_deed" value="'+v('deedNo')+'"></div>';
-  h+='</div>';
-  h+='<div class="grid">';
-  h+=' <div class="field"><label class="f">ตำบล</label><input class="inp" id="lf_sub" value="'+v('subdistrict')+'"></div>';
-  h+=' <div class="field"><label class="f">อำเภอ</label><input class="inp" id="lf_dist" value="'+v('district')+'"></div>';
-  h+='</div>';
-  h+='<div class="grid">';
-  h+=' <div class="field"><label class="f">จังหวัด</label><input class="inp" id="lf_prov" value="'+v('province')+'"></div>';
-  h+=' <div class="field"><label class="f">พิกัด (lat,lng)</label><input class="inp" id="lf_coords" value="'+v('coords')+'" placeholder="14.97,102.07"></div>';
-  h+='</div>';
+  h+='<div class="mini" style="font-weight:700;margin:6px 2px 4px;color:var(--primary-d)">เนื้อที่ที่เช่า (ถ้าแบ่งเช่า เว้นว่างได้)</div>';
+  h+='<div class="grid3"><div class="field"><label class="f">ไร่</label><input class="inp" id="lf_arai" inputmode="decimal" value="'+(L.areaRai||0)+'"></div>';
+  h+='<div class="field"><label class="f">งาน</label><input class="inp" id="lf_angan" inputmode="numeric" value="'+(L.areaNgan||0)+'"></div>';
+  h+='<div class="field"><label class="f">ตร.ว.</label><input class="inp" id="lf_awa" inputmode="decimal" value="'+(L.areaWa||0)+'"></div></div>';
   h+='<div class="divider"></div>';
-  h+='<div class="mini" style="font-weight:700;margin-bottom:6px;color:var(--primary-d)">การคำนวณรอบเช่า &amp; วันจ่ายอัตโนมัติ</div>';
-  h+='<div class="grid">';
-  h+=' <div class="field"><label class="f">ค่าเช่า (บาท/รอบ)</label><input class="inp" id="lf_rent" inputmode="decimal" value="'+v('rent')+'" oninput="landPreview()"></div>';
-  h+=' <div class="field"><label class="f">ความถี่</label><select class="inp" id="lf_freq" onchange="landPreview()">'+opt('monthly',L.frequency,'รายเดือน')+opt('semi',L.frequency,'รายครึ่งปี (6 ด.)')+opt('yearly',L.frequency,'รายปี')+opt('tri',L.frequency,'ราย 3 ปี')+'</select></div>';
-  h+='</div>';
+  h+='<div class="mini" style="font-weight:700;margin-bottom:6px;color:var(--primary-d)">การคำนวณรอบเช่า &amp; วันจ่าย</div>';
+  h+='<div class="grid"><div class="field"><label class="f">ค่าเช่า (บาท/รอบ)</label><input class="inp" id="lf_rent" inputmode="decimal" value="'+v('rent')+'" oninput="landPreview()"></div>';
+  h+='<div class="field"><label class="f">ความถี่</label><select class="inp" id="lf_freq" onchange="landPreview()">'+opt('monthly',L.frequency,'รายเดือน')+opt('semi',L.frequency,'รายครึ่งปี (6 ด.)')+opt('yearly',L.frequency,'รายปี')+opt('tri',L.frequency,'ราย 3 ปี')+'</select></div></div>';
   h+='<div class="field"><label class="f">วันเริ่มรอบเช่าปัจจุบัน</label><input class="inp" id="lf_pstart" type="date" value="'+esc(L.periodStart)+'" onchange="landPreview()"></div>';
-  h+='<div class="grid">';
-  h+=' <div class="field"><label class="f">จ่ายเร็ว/ช้ากว่าวันเริ่มรอบ (เดือน)</label><input class="inp" id="lf_off" inputmode="numeric" value="'+(L.payOffsetMonths||0)+'" oninput="landPreview()"></div>';
-  h+=' <div class="field"><label class="f">จ่ายในวันที่ (1–31, ว่าง=วันเดียวกับรอบ)</label><input class="inp" id="lf_payday" inputmode="numeric" value="'+(L.payDay||'')+'" oninput="landPreview()" placeholder="เช่น 1, 11, 20"></div>';
-  h+='</div>';
-  h+='<div class="mini" style="margin:-4px 2px 8px">ค่าติดลบ = จ่าย<b>ก่อน</b>รอบเริ่ม (ล่วงหน้า) • 0 = จ่ายต้นรอบ • บวก = จ่าย<b>ระหว่าง/หลัง</b>รอบ</div>';
-  h+='<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">';
-  h+=' <button type="button" class="pill teal" onclick="landPreset(0,1)">A: จ่ายต้นรอบ ทุกวันที่ 1</button>';
-  h+=' <button type="button" class="pill teal" onclick="landPreset(-1,1)">B: ล่วงหน้า 1 เดือน</button>';
-  h+=' <button type="button" class="pill teal" onclick="landPreset(10,11)">C: เดือนที่ 11 (พ.ย.)</button>';
-  h+='</div>';
+  h+='<div class="grid"><div class="field"><label class="f">จ่ายเร็ว/ช้ากว่าวันเริ่มรอบ (เดือน)</label><input class="inp" id="lf_off" inputmode="numeric" value="'+(L.payOffsetMonths||0)+'" oninput="landPreview()"></div>';
+  h+='<div class="field"><label class="f">จ่ายในวันที่ (1–31)</label><input class="inp" id="lf_payday" inputmode="numeric" value="'+(L.payDay||'')+'" oninput="landPreview()" placeholder="เช่น 1, 11, 20"></div></div>';
+  h+='<div class="mini" style="margin:-4px 2px 8px">ค่าติดลบ = จ่ายก่อนรอบ (ล่วงหน้า) • 0 = ต้นรอบ • บวก = ระหว่าง/หลังรอบ</div>';
+  h+='<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px"><button type="button" class="pill teal" onclick="landPreset(0,1)">จ่ายต้นรอบ ทุกวันที่ 1</button><button type="button" class="pill teal" onclick="landPreset(-1,1)">ล่วงหน้า 1 เดือน</button><button type="button" class="pill teal" onclick="landPreset(10,11)">เดือนที่ 11 (พ.ย.)</button></div>';
   h+='<div id="lf_preview" class="hint"></div>';
-  h+='<div class="field"><label class="f">หมายเหตุรอบเช่า (ถ้าต้องการ)</label><textarea class="inp" id="lf_pnote" placeholder="เช่น สัญญาเช่า 3 ปี / ผู้เช่าชอบมาจ่ายเร็ว">'+v('periodNote')+'</textarea></div>';
-  h+='<div class="field"><label class="f">ยอดที่ต้องชำระตอนนี้ (คงค้าง)</label><input class="inp" id="lf_out" inputmode="decimal" value="'+(L.outstanding||0)+'"><div class="mini" style="margin-top:3px">เว้นไว้ 0 ตอนสร้างใหม่ = ระบบใส่ค่าเช่ารอบแรกให้อัตโนมัติ</div></div>';
-  h+='<button class="btn block" onclick="landSave(\''+L.id+'\','+(isNew?'true':'false')+')">บันทึก</button>';
-  openModal(h);
-  landPreview();
+  h+='<div class="field"><label class="f">หมายเหตุ</label><textarea class="inp" id="lf_pnote">'+v('periodNote')+'</textarea></div>';
+  h+='<div class="field"><label class="f">ยอดที่ต้องชำระตอนนี้ (คงค้าง)</label><input class="inp" id="lf_out" inputmode="decimal" value="'+(L.outstanding||0)+'"><div class="mini" style="margin-top:3px">เว้น 0 ตอนสร้างใหม่ = ระบบใส่ค่าเช่ารอบแรกให้</div></div>';
+  h+='<button class="btn block" onclick="leaseSave(\''+pid+'\',\''+L.id+'\','+(isNew?'true':'false')+')">บันทึก</button>';
+  openModal(h); landPreview();
+}
+function leaseSave(pid, lid, isNew){
+  var P=findPlot(pid); if(!P) return;
+  var L = isNew? {id:lid, payments:[]} : findLease(pid,lid);
+  if(!L){ L={id:lid,payments:[]}; isNew=true; }
+  L.tenantName=el('lf_tenant').value.trim(); L.phone=el('lf_phone').value.trim(); L.tenantAddr=el('lf_addr').value.trim();
+  L.areaRai=num(el('lf_arai').value); L.areaNgan=num(el('lf_angan').value); L.areaWa=num(el('lf_awa').value);
+  L.rent=num(el('lf_rent').value); L.frequency=el('lf_freq').value; L.periodStart=el('lf_pstart').value;
+  L.payOffsetMonths=num(el('lf_off').value); L.payDay=num(el('lf_payday').value); L.periodNote=el('lf_pnote').value.trim();
+  L.outstanding=num(el('lf_out').value);
+  if(isNew && L.outstanding===0 && num(L.rent)>0) L.outstanding=num(L.rent);
+  L.dueOverride=null; if(!L.payments) L.payments=[];
+  if(isNew){ if(!P.leases) P.leases=[]; P.leases.push(L); }
+  saveDB(); closeModal(); toast('บันทึกแล้ว'); renderLand();
 }
 function landPreset(off, day){ el('lf_off').value=off; el('lf_payday').value=day; landPreview(); }
 function landPreview(){
@@ -645,61 +714,42 @@ function landPreview(){
   html+='<span class="mini">รอบถัดไปจะครบ '+fmtBE(addMonths(due, freqMonths(tmp.frequency)))+' โดยอัตโนมัติเมื่อกดรับชำระ</span>';
   el('lf_preview').innerHTML=html;
 }
-function landSave(id, isNew){
-  var L = isNew? { id:id, payments:[] } : findLand(id);
-  if(!L){ L={id:id,payments:[]}; isNew=true; }
-  L.name=el('lf_name').value.trim();
-  L.tenantName=el('lf_tenant').value.trim();
-  L.phone=el('lf_phone').value.trim();
-  L.tenantAddr=el('lf_addr').value.trim();
-  L.owner=el('lf_owner').value.trim();
-  L.deedNo=el('lf_deed').value.trim();
-  L.subdistrict=el('lf_sub').value.trim();
-  L.district=el('lf_dist').value.trim();
-  L.province=el('lf_prov').value.trim();
-  L.coords=el('lf_coords').value.trim();
-  L.rent=num(el('lf_rent').value);
-  L.frequency=el('lf_freq').value;
-  L.periodStart=el('lf_pstart').value;
-  L.payOffsetMonths=num(el('lf_off').value);
-  L.payDay=num(el('lf_payday').value);
-  L.periodNote=el('lf_pnote').value.trim();
-  L.outstanding=num(el('lf_out').value);
-  if(isNew && L.outstanding===0 && num(L.rent)>0) L.outstanding=num(L.rent);
-  L.dueOverride=null;
-  if(!L.payments) L.payments=[];
-  if(isNew) DB.lands.push(L);
-  saveDB(); closeModal(); toast('บันทึกแล้ว'); renderLand();
-}
-function landDelete(id){
-  var L=findLand(id); if(!L) return;
-  openConfirm('ลบแปลง "'+esc(L.name||L.tenantName||'')+'" ?', function(){
+function plotDelete(id){
+  var P=findPlot(id); if(!P) return;
+  var n=(P.leases||[]).length;
+  openConfirm('ลบแปลง "'+esc(plotTitle(P))+'"'+(n?(' พร้อมผู้เช่า '+n+' ราย'):'')+' ?', function(){
     for(var i=0;i<DB.lands.length;i++){ if(DB.lands[i].id===id){ DB.lands.splice(i,1); break; } }
     saveDB(); closeModal(); toast('ลบแล้ว'); renderLand();
   });
 }
-function landDefer(id){
-  var L=findLand(id); if(!L) return;
-  var h='<div class="mh"><h3>เลื่อนชำระส่วนที่เหลือ</h3><div class="spacer"></div><button class="x" onclick="landDetail(\''+id+'\')">×</button></div>';
-  h+='<div class="sub" style="color:var(--muted)">กำหนดเดิม: '+fmtBE(landDue(L))+' • คงค้าง '+money(L.outstanding)+' บ. (เลื่อนเฉพาะรอบนี้ ไม่กระทบรอบถัดไป)</div>';
+function leaseDelete(pid,lid){
+  var P=findPlot(pid); var L=findLease(pid,lid); if(!L) return;
+  openConfirm('ลบผู้เช่า "'+esc(L.tenantName||'')+'" ออกจากแปลงนี้?', function(){
+    for(var i=0;i<P.leases.length;i++){ if(P.leases[i].id===lid){ P.leases.splice(i,1); break; } }
+    saveDB(); closeModal(); toast('ลบแล้ว'); renderLand();
+  });
+}
+function leaseDefer(pid,lid){
+  var L=findLease(pid,lid); if(!L) return;
+  var h='<div class="mh"><h3>เลื่อนชำระส่วนที่เหลือ</h3><div class="spacer"></div><button class="x" onclick="leaseDetail(\''+pid+'\',\''+lid+'\')">×</button></div>';
+  h+='<div class="sub" style="color:var(--muted)">กำหนดเดิม: '+fmtBE(landDue(L))+' • คงค้าง '+money(L.outstanding)+' บ.</div>';
   h+='<div class="field"><label class="f">เลื่อนไปเป็นวันที่</label><input class="inp" id="df_due" type="date" value="'+esc(landDue(L))+'"></div>';
-  h+='<div class="field"><label class="f">เหตุผล (บันทึกไว้)</label><input class="inp" id="df_note" placeholder="เช่น ผู้เช่าขอเลื่อนส่วนที่เหลือ"></div>';
-  h+='<button class="btn block warn" onclick="landDeferSave(\''+id+'\')">บันทึกการเลื่อน</button>';
+  h+='<div class="field"><label class="f">เหตุผล</label><input class="inp" id="df_note" placeholder="เช่น ผู้เช่าขอเลื่อน"></div>';
+  h+='<button class="btn block warn" onclick="leaseDeferSave(\''+pid+'\',\''+lid+'\')">บันทึกการเลื่อน</button>';
   openModal(h);
 }
-function landDeferSave(id){
-  var L=findLand(id); if(!L) return;
+function leaseDeferSave(pid,lid){
+  var L=findLease(pid,lid); if(!L) return;
   var nd=el('df_due').value, note=el('df_note').value.trim();
   if(!L.deferLog) L.deferLog=[];
   L.deferLog.push({from:landDue(L),to:nd,note:note,at:todayISO()});
-  L.dueOverride=nd;
-  saveDB(); toast('เลื่อนกำหนดแล้ว'); landDetail(id); renderLand();
+  L.dueOverride=nd; saveDB(); toast('เลื่อนกำหนดแล้ว'); leaseDetail(pid,lid); renderLand();
 }
-function landDetail(id){
-  var L=findLand(id); if(!L) return;
+function leaseDetail(pid,lid){
+  var P=findPlot(pid), L=findLease(pid,lid); if(!L) return;
   var due=landDue(L), owe=num(L.outstanding);
-  var h='<div class="mh"><h3>จัดการยอด – '+esc(L.name||L.tenantName||'')+'</h3><div class="spacer"></div><button class="x" onclick="closeModal()">×</button></div>';
-  h+='<div class="mini">รอบเช่า <b>'+landPeriodLabel(L)+'</b></div>';
+  var h='<div class="mh"><h3>จัดการยอด – '+esc(L.tenantName||plotTitle(P))+'</h3><div class="spacer"></div><button class="x" onclick="closeModal()">×</button></div>';
+  h+='<div class="mini">แปลง '+esc(plotTitle(P))+' • รอบเช่า <b>'+landPeriodLabel(L)+'</b></div>';
   h+='<div class="mini" style="margin-bottom:8px">ครบกำหนด <b>'+fmtBE(due)+'</b>'+(L.dueOverride?' <span class="pill amber">เลื่อนแล้ว</span>':'')+'</div>';
   var paidSum=0,pp=L.payments||[],i; for(i=0;i<pp.length;i++) paidSum+=num(pp[i].amount);
   h+='<div class="stat" style="grid-template-columns:1fr 1fr"><div class="s '+(owe>0?'red':'green')+'"><div class="n">'+money(owe>0?owe:0)+'</div><div class="l">ยอดคงค้างตอนนี้ (บาท)</div></div>';
@@ -710,25 +760,25 @@ function landDetail(id){
     h+='<div class="field"><label class="f">จำนวนที่รับ</label><input class="inp" id="ld_amt" inputmode="decimal" value="'+owe+'"></div></div>';
     h+='<div class="grid"><div class="field"><label class="f">ช่องทาง</label><select class="inp" id="ld_method"><option>เงินสด</option><option>โอนเงิน</option><option>พร้อมเพย์</option><option>เช็ค</option><option>อื่นๆ</option></select></div>';
     h+='<div class="field"><label class="f">หมายเหตุ</label><input class="inp" id="ld_note"></div></div>';
-    h+='<button class="btn block" onclick="landReceive(\''+id+'\')">บันทึกรับชำระ (ตัดยอดค้าง)</button></div>';
-    h+='<div class="row-actions"><button class="btn sm warn" onclick="landDefer(\''+id+'\')">เลื่อนชำระส่วนที่เหลือ</button></div>';
+    h+='<button class="btn block" onclick="leaseReceive(\''+pid+'\',\''+lid+'\')">บันทึกรับชำระ (ตัดยอดค้าง)</button></div>';
+    h+='<div class="row-actions"><button class="btn sm warn" onclick="leaseDefer(\''+pid+'\',\''+lid+'\')">เลื่อนชำระส่วนที่เหลือ</button></div>';
   } else {
     h+='<div class="hint" style="margin-top:10px">✅ ชำระครบรอบนี้แล้ว กด “ขึ้นรอบถัดไป” เพื่อเริ่มเก็บรอบใหม่</div>';
   }
-  h+='<div class="row-actions" style="margin-top:8px"><button class="btn sm" onclick="landInvoiceImage(\''+id+'\')">🧾 ออกรูปใบแจ้งค่าเช่า</button><button class="btn sm alt" onclick="landNextCycle(\''+id+'\')">ขึ้นรอบถัดไป (+ค่าเช่า '+money(L.rent)+')</button></div>';
+  h+='<div class="row-actions" style="margin-top:8px"><button class="btn sm" onclick="leaseInvoiceImage(\''+pid+'\',\''+lid+'\')">🧾 ออกรูปใบแจ้งค่าเช่า</button><button class="btn sm alt" onclick="leaseNextCycle(\''+pid+'\',\''+lid+'\')">ขึ้นรอบถัดไป (+ค่าเช่า '+money(L.rent)+')</button></div>';
   h+='<div class="divider"></div><div class="mini" style="font-weight:700;margin-bottom:6px">ประวัติการชำระ ('+pp.length+' รายการ)</div>';
   if(pp.length===0) h+='<div class="mini" style="color:var(--muted)">ยังไม่มีการชำระ</div>';
   for(i=pp.length-1;i>=0;i--){ var x=pp[i];
     h+='<div class="room-line"><div><div style="font-weight:600">'+money(x.amount)+' บ. <span class="mini">('+esc(x.method||'-')+')</span></div><div class="mini">'+fmtBE(x.date)+(x.note?(' • '+esc(x.note)):'')+'</div></div><div class="spacer"></div>';
-    h+='<button class="btn sm" onclick="landPaymentReceipt(\''+id+'\',\''+x.id+'\')">ใบเสร็จ</button> <button class="btn sm grey" onclick="landEditPayment(\''+id+'\',\''+x.id+'\')">แก้</button> <button class="btn sm danger" onclick="landDeletePayment(\''+id+'\',\''+x.id+'\')">ลบ</button></div>';
+    h+='<button class="btn sm" onclick="leasePaymentReceipt(\''+pid+'\',\''+lid+'\',\''+x.id+'\')">ใบเสร็จ</button> <button class="btn sm grey" onclick="leaseEditPayment(\''+pid+'\',\''+lid+'\',\''+x.id+'\')">แก้</button> <button class="btn sm danger" onclick="leaseDeletePayment(\''+pid+'\',\''+lid+'\',\''+x.id+'\')">ลบ</button></div>';
   }
   if(L.deferLog && L.deferLog.length){ h+='<div class="divider"></div><div class="mini" style="font-weight:600;margin-bottom:6px">ประวัติการเลื่อน</div>';
     for(i=L.deferLog.length-1;i>=0;i--){ var d=L.deferLog[i]; h+='<div class="mini">• '+fmtBEshort(d.from)+' → '+fmtBEshort(d.to)+(d.note?(' ('+esc(d.note)+')'):'')+'</div>'; }
   }
   openModal(h);
 }
-function landReceive(id){
-  var L=findLand(id); if(!L) return;
+function leaseReceive(pid,lid){
+  var L=findLease(pid,lid); if(!L) return;
   var amt=num(el('ld_amt').value);
   if(amt<=0){ toast('ใส่จำนวนเงิน'); return; }
   if(!L.payments) L.payments=[];
@@ -737,40 +787,40 @@ function landReceive(id){
   L.outstanding = num(L.outstanding)-amt;
   saveDB();
   toast(L.outstanding>0?('ตัดยอดแล้ว เหลือค้าง '+money(L.outstanding)+' บ.'):'ชำระครบแล้ว');
-  landDetail(id); renderLand();
+  leaseDetail(pid,lid); renderLand();
 }
-function landNextCycle(id){
-  var L=findLand(id); if(!L) return;
+function leaseNextCycle(pid,lid){
+  var L=findLease(pid,lid); if(!L) return;
   openConfirm('ขึ้นรอบถัดไป? ระบบจะเลื่อนรอบเช่าและเพิ่มค่าเช่า '+money(L.rent)+' บ. เข้ายอดที่ต้องชำระ'+(num(L.outstanding)>0?(' (ยอดค้างเดิม '+money(L.outstanding)+' จะถูกทบไปด้วย)'):''), function(){
     landAdvance(L);
     L.outstanding = num(L.outstanding)+num(L.rent);
-    saveDB(); closeModal(); landDetail(id); renderLand(); toast('ขึ้นรอบใหม่แล้ว');
+    saveDB(); closeModal(); leaseDetail(pid,lid); renderLand(); toast('ขึ้นรอบใหม่แล้ว');
   });
 }
-function landEditPayment(lid,pid){
-  var L=findLand(lid); if(!L) return; var p=null,i; for(i=0;i<L.payments.length;i++) if(L.payments[i].id===pid){p=L.payments[i];break;} if(!p) return;
-  var h='<div class="mh"><h3>แก้ไขรายการชำระ</h3><div class="spacer"></div><button class="x" onclick="landDetail(\''+lid+'\')">×</button></div>';
+function leaseEditPayment(pid,lid,xid){
+  var L=findLease(pid,lid); if(!L) return; var p=null,i; for(i=0;i<L.payments.length;i++) if(L.payments[i].id===xid){p=L.payments[i];break;} if(!p) return;
+  var h='<div class="mh"><h3>แก้ไขรายการชำระ</h3><div class="spacer"></div><button class="x" onclick="leaseDetail(\''+pid+'\',\''+lid+'\')">×</button></div>';
   h+='<div class="grid"><div class="field"><label class="f">วันที่</label><input class="inp" id="lep_date" type="date" value="'+esc(p.date)+'"></div>';
   h+='<div class="field"><label class="f">จำนวน</label><input class="inp" id="lep_amt" inputmode="decimal" value="'+p.amount+'"></div></div>';
   h+='<div class="grid"><div class="field"><label class="f">ช่องทาง</label><input class="inp" id="lep_method" value="'+esc(p.method||'')+'"></div>';
   h+='<div class="field"><label class="f">หมายเหตุ</label><input class="inp" id="lep_note" value="'+esc(p.note||'')+'"></div></div>';
   h+='<div class="mini" style="margin-bottom:8px">แก้จำนวนแล้วระบบจะปรับยอดคงค้างให้อัตโนมัติ</div>';
-  h+='<button class="btn block" onclick="landEditPaymentSave(\''+lid+'\',\''+pid+'\')">บันทึกการแก้ไข</button>';
+  h+='<button class="btn block" onclick="leaseEditPaymentSave(\''+pid+'\',\''+lid+'\',\''+xid+'\')">บันทึกการแก้ไข</button>';
   openModal(h);
 }
-function landEditPaymentSave(lid,pid){
-  var L=findLand(lid); var p=null,i; for(i=0;i<L.payments.length;i++) if(L.payments[i].id===pid){p=L.payments[i];break;} if(!p) return;
+function leaseEditPaymentSave(pid,lid,xid){
+  var L=findLease(pid,lid); var p=null,i; for(i=0;i<L.payments.length;i++) if(L.payments[i].id===xid){p=L.payments[i];break;} if(!p) return;
   var newAmt=num(el('lep_amt').value), delta=newAmt-num(p.amount);
   p.amount=newAmt; p.date=el('lep_date').value; p.method=el('lep_method').value.trim(); p.note=el('lep_note').value.trim();
   L.outstanding=num(L.outstanding)-delta;
-  saveDB(); toast('แก้ไขแล้ว'); landDetail(lid); renderLand();
+  saveDB(); toast('แก้ไขแล้ว'); leaseDetail(pid,lid); renderLand();
 }
-function landDeletePayment(lid,pid){
-  var L=findLand(lid); var idx=-1,i; for(i=0;i<L.payments.length;i++) if(L.payments[i].id===pid){idx=i;break;} if(idx<0) return;
+function leaseDeletePayment(pid,lid,xid){
+  var L=findLease(pid,lid); var idx=-1,i; for(i=0;i<L.payments.length;i++) if(L.payments[i].id===xid){idx=i;break;} if(idx<0) return;
   openConfirm('ลบรายการชำระนี้? ยอดค้างจะถูกบวกกลับ', function(){
     L.outstanding=num(L.outstanding)+num(L.payments[idx].amount);
     L.payments.splice(idx,1);
-    saveDB(); closeModal(); landDetail(lid); renderLand(); toast('ลบแล้ว');
+    saveDB(); closeModal(); leaseDetail(pid,lid); renderLand(); toast('ลบแล้ว');
   });
 }
 
@@ -854,7 +904,7 @@ function renderZone(){
     if(Z.rooms.length===0){ h+='<div class="mini">ยังไม่มีห้องในโซนนี้</div>'; }
     for(j=0;j<Z.rooms.length;j++){ var R=Z.rooms[j]; var bal=roomBalance(R); var ds=depositStatus(R);
       h+='<div class="room-line"><div><div style="font-weight:600">ห้อง '+esc(R.no||'-')+' <span class="mini">'+esc(R.tenantName||'(ว่าง)')+'</span></div><div class="mini">เช่า '+money(R.rent)+' • ประกัน '+money(R.deposit)+(R.chargeMeterFee?'':' • ยกเว้นค่ามิเตอร์')+' • ครบทุกวันที่ '+(R.dueDay||'-')+(!R.depositPaid?' • <span style="color:var(--amber)">ยังไม่เก็บประกัน</span>':(R.depositReturned?' • คืนประกันแล้ว':''))+'</div></div><div class="spacer"></div>';
-      h+=(bal>0?('<span class="pill red">ค้าง '+money(bal)+'</span>'):'')+' <button class="btn sm" onclick="roomLatestBillImage(\''+Z.id+'\',\''+R.id+'\')">ใบแจ้ง</button> <button class="btn sm grey" onclick="roomDeposit(\''+Z.id+'\',\''+R.id+'\')">ประกัน</button> <button class="btn sm alt" onclick="roomForm(\''+Z.id+'\',\''+R.id+'\')">แก้</button> <button class="btn sm grey" onclick="roomInfo(\''+Z.id+'\',\''+R.id+'\')">ข้อมูล</button></div>';
+      h+=(bal>0?('<span class="pill red">ค้าง '+money(bal)+'</span>'):'')+' <button class="btn sm" onclick="roomLatestBillImage(\''+Z.id+'\',\''+R.id+'\')">ใบแจ้ง</button> <button class="btn sm grey" onclick="roomDeposit(\''+Z.id+'\',\''+R.id+'\')">ประกัน</button> <button class="btn sm grey" onclick="roomChangeTenant(\''+Z.id+'\',\''+R.id+'\')">เปลี่ยนผู้เช่า</button> <button class="btn sm alt" onclick="roomForm(\''+Z.id+'\',\''+R.id+'\')">แก้</button> <button class="btn sm grey" onclick="roomInfo(\''+Z.id+'\',\''+R.id+'\')">ข้อมูล</button></div>';
     }
     h+='  <div class="row-actions"><button class="btn sm" onclick="roomForm(\''+Z.id+'\')">+ เพิ่มห้อง</button>';
     h+='   <button class="btn sm alt" onclick="zoneForm(\''+Z.id+'\')">ตั้งค่าโซน</button>';
@@ -988,7 +1038,15 @@ function roomInfo(zid,rid){
   h+='<span><b>ผู้เช่า</b> '+esc(R.tenantName||'-')+'</span><span><b>โทร</b> '+esc(R.phone||'-')+'</span>';
   h+='<span><b>ค่าเช่า</b> '+money(R.rent)+'</span><span><b>ประกัน</b> '+money(R.deposit)+'</span>';
   h+='<span><b>มิเตอร์ไฟล่าสุด</b> '+money(R.prevElec)+'</span><span><b>มิเตอร์น้ำล่าสุด</b> '+money(R.prevWater)+'</span>';
+  if(R.tenantSince) h+='<span><b>เข้าอยู่เมื่อ</b> '+fmtBEshort(R.tenantSince)+'</span>';
   h+='</div>';
+  h+='<button class="btn sm grey" style="margin-top:8px" onclick="closeModal();roomChangeTenant(\''+zid+'\',\''+rid+'\')">เปลี่ยนผู้เช่า</button>';
+  if(R.tenantHistory && R.tenantHistory.length){
+    h+='<div class="divider"></div><div class="mini" style="font-weight:600;margin-bottom:6px">ผู้เช่าคนก่อนหน้า ('+R.tenantHistory.length+' คน)</div>';
+    var hh=R.tenantHistory, j; for(j=hh.length-1;j>=0;j--){ var x=hh[j];
+      h+='<div class="room-line"><div><div style="font-weight:600">'+esc(x.name||'-')+(x.phone?(' <span class="mini">'+esc(x.phone)+'</span>'):'')+'</div><div class="mini">'+(x.from?fmtBEshort(x.from):'?')+' → '+(x.to?fmtBEshort(x.to):'?')+'</div></div></div>';
+    }
+  }
   if(R.tenantAddr) h+='<div class="mini" style="margin-top:6px">🏠 '+esc(R.tenantAddr)+'</div>';
   if(R.deedNo||R.subdistrict) h+='<div class="mini">โฉนด '+esc(R.deedNo||'-')+' • ต.'+esc(R.subdistrict||'-')+' อ.'+esc(R.district||'-')+' จ.'+esc(R.province||'-')+'</div>';
   var ds=depositStatus(R);
@@ -1449,17 +1507,18 @@ function billPaymentReceipt(zid,rid,bid,pid){
   var p=null,i; for(i=0;i<(b.payments||[]).length;i++) if(b.payments[i].id===pid){p=b.payments[i];break;} if(!p) return;
   invoiceFromBill(Z,R,b,{receipt:true,payment:p});
 }
-function landPaymentReceipt(lid,pid){
-  var L=findLand(lid); if(!L) return; var p=null,i; for(i=0;i<(L.payments||[]).length;i++) if(L.payments[i].id===pid){p=L.payments[i];break;} if(!p) return;
+function leasePaymentReceipt(pid,lid,xid){
+  var P=findPlot(pid), L=findLease(pid,lid); if(!L) return;
+  var p=null,i; for(i=0;i<(L.payments||[]).length;i++) if(L.payments[i].id===xid){p=L.payments[i];break;} if(!p) return;
   var owe=num(L.outstanding);
   var data={ title:(owe<=0?'ใบเสร็จรับเงิน':'ใบรับชำระบางส่วน'), bizName:DB.settings.bizName, bizPhone:DB.settings.bizPhone,
     statusText:(owe<=0?'ชำระครบแล้ว':'ค้างอีก '+money(owe)), statusColor:(owe<=0?'#15803d':'#c0392b'),
-    metaLeft:[['ผู้เช่า',L.tenantName||'-'],['แปลง',L.name||'-'],['ช่องทางชำระ',p.method||'-']],
+    metaLeft:[['ผู้เช่า',L.tenantName||'-'],['แปลง',plotTitle(P)],['ช่องทางชำระ',p.method||'-']],
     metaRight:[['วันที่รับเงิน',fmtBE(p.date)],['รอบเช่า',landPeriodLabel(L)]],
     items:[{label:'รับชำระค่าเช่าที่ดิน', sub:'รอบ '+landPeriodLabel(L), amount:p.amount}],
     total:p.amount, totalLabel:'รับเงินครั้งนี้', boxTone:'paid',
     note:(owe>0?('ยอดคงค้างหลังชำระ '+money(owe)+' บาท'):'ชำระครบเรียบร้อย ขอบคุณครับ/ค่ะ') };
-  withFonts(function(){ showInvoiceModal(makeInvoiceCanvas(data), safeName('receipt_land_'+(L.name||lid))+'.png'); });
+  withFonts(function(){ showInvoiceModal(makeInvoiceCanvas(data), safeName('receipt_land_'+(L.tenantName||plotTitle(P)))+'.png'); });
 }
 function roomBillImage(zid,rid,bid){
   var Z=findZone(zid),R=findRoom(zid,rid); if(!R) return; var b=getBill(R,bid); if(!b) return;
@@ -1475,19 +1534,65 @@ function billRowImage(idx){
     elecUnits:r.eu, waterUnits:r.wu, elecAmt:r.eAmt, waterAmt:r.wAmt, meterFee:r.mf, rent:num(R.rent), total:r.total, paid:0};
   invoiceFromBill(Z,R,b);
 }
-function landInvoiceImage(id){
-  var L=findLand(id); if(!L) return;
+function leaseInvoiceImage(pid,lid){
+  var P=findPlot(pid), L=findLease(pid,lid); if(!L) return;
   var items=[{label:'ค่าเช่าที่ดิน', sub:freqLabel(L.frequency)+' • รอบ '+landPeriodLabel(L), amount:L.rent}];
   var carried=num(L.outstanding)-num(L.rent);
   if(carried>0.005) items.push({label:'ยอดค้างสะสม', sub:'ยอดคงค้างจากรอบก่อน', amount:carried});
   var owe=num(L.outstanding);
   var data={ title:'ใบแจ้งค่าเช่าที่ดิน', bizName:DB.settings.bizName, bizPhone:DB.settings.bizPhone,
     statusText:(owe>0?'ค้างชำระ':'ชำระครบ'), statusColor:(owe>0?'#c0392b':'#15803d'),
-    metaLeft:[['ผู้เช่า',L.tenantName||'-'],['แปลง',L.name||'-'],['เลขโฉนด',L.deedNo||'-']],
+    metaLeft:[['ผู้เช่า',L.tenantName||'-'],['แปลง',plotTitle(P)],['เลขโฉนด',P.deedNo||'-']],
     metaRight:[['รอบเช่า',landPeriodLabel(L)],['ครบกำหนดชำระ',fmtBE(landDue(L))]],
     items:items, total:owe, totalLabel:'ยอดที่ต้องชำระ',
-    note:'ที่ตั้ง: ต.'+(L.subdistrict||'-')+' อ.'+(L.district||'-')+' จ.'+(L.province||'-') };
-  withFonts(function(){ showInvoiceModal(makeInvoiceCanvas(data), safeName('land_'+(L.name||id))+'.png'); });
+    note:'ที่ตั้ง: ต.'+(P.subdistrict||'-')+' อ.'+(P.district||'-')+' จ.'+(P.province||'-') };
+  withFonts(function(){ showInvoiceModal(makeInvoiceCanvas(data), safeName('land_'+plotTitle(P))+'.png'); });
+}
+function roomChangeTenant(zid,rid){
+  var Z=findZone(zid),R=findRoom(zid,rid); if(!R) return;
+  var hist=R.tenantHistory||[];
+  var bal=roomBalance(R);
+  var h='<div class="mh"><h3>เปลี่ยนผู้เช่า – ห้อง '+esc(R.no||'-')+'</h3><div class="spacer"></div><button class="x" onclick="closeModal()">×</button></div>';
+  if(R.tenantName){
+    h+='<div class="hint">ผู้เช่าปัจจุบัน: <b>'+esc(R.tenantName)+'</b>'+(R.phone?(' • '+esc(R.phone)):'')+(R.tenantSince?(' • เข้าอยู่ '+fmtBE(R.tenantSince)):'')+'<br>กดเปลี่ยนแล้วชื่อคนนี้จะถูกเก็บเข้าประวัติ</div>';
+    if(bal>0) h+='<div class="warnbox">⚠ ห้องนี้ยังมียอดค้าง '+money(bal)+' บาท ควรเคลียร์ก่อน (บิลเดิมจะยังอยู่ ไม่ถูกลบ)</div>';
+    h+='<div class="field"><label class="f">วันที่ผู้เช่าเดิมย้ายออก</label><input class="inp" id="ct_out" type="date" value="'+todayISO()+'"></div>';
+    h+='<div class="divider"></div>';
+  } else {
+    h+='<div class="hint">ห้องนี้ยังว่าง — กรอกข้อมูลผู้เช่าใหม่</div>';
+  }
+  h+='<div style="font-weight:600;margin-bottom:6px">ผู้เช่าใหม่</div>';
+  h+='<div class="field"><label class="f">ชื่อผู้เช่าใหม่</label><input class="inp" id="ct_name" placeholder="ชื่อ-นามสกุล"></div>';
+  h+='<div class="grid"><div class="field"><label class="f">เบอร์โทร</label><input class="inp" id="ct_phone" inputmode="tel"></div>';
+  h+='<div class="field"><label class="f">วันที่เข้าอยู่</label><input class="inp" id="ct_in" type="date" value="'+todayISO()+'"></div></div>';
+  h+='<label class="f" style="display:block;margin:4px 0 10px"><input type="checkbox" id="ct_blank"> ปล่อยห้องว่าง (ยังไม่ใส่ผู้เช่าใหม่ตอนนี้)</label>';
+  h+='<button class="btn block" onclick="saveChangeTenant(\''+zid+'\',\''+rid+'\')">บันทึกการเปลี่ยนผู้เช่า</button>';
+  if(hist.length){
+    h+='<div class="divider"></div><div style="font-weight:600;margin-bottom:6px">ผู้เช่าคนก่อนหน้า ('+hist.length+' คน)</div>';
+    var i; for(i=hist.length-1;i>=0;i--){ var x=hist[i];
+      h+='<div class="room-line"><div><div style="font-weight:600">'+esc(x.name||'-')+(x.phone?(' <span class="mini">'+esc(x.phone)+'</span>'):'')+'</div><div class="mini">'+(x.from?fmtBEshort(x.from):'?')+' → '+(x.to?fmtBEshort(x.to):'?')+'</div></div></div>';
+    }
+  }
+  openModal(h);
+}
+function saveChangeTenant(zid,rid){
+  var R=findRoom(zid,rid); if(!R) return;
+  var blank=el('ct_blank') && el('ct_blank').checked;
+  var newName=el('ct_name')?el('ct_name').value.replace(/^\s+|\s+$/g,''):'';
+  if(!blank && !newName){ toast('กรอกชื่อผู้เช่าใหม่ หรือเลือกปล่อยห้องว่าง'); return; }
+  if(R.tenantName){
+    if(!R.tenantHistory) R.tenantHistory=[];
+    R.tenantHistory.push({ name:R.tenantName, phone:R.phone||'', from:R.tenantSince||'', to:(el('ct_out')?el('ct_out').value:todayISO()) });
+  }
+  if(blank){ R.tenantName=''; R.phone=''; R.tenantSince=''; }
+  else {
+    R.tenantName=newName;
+    R.phone=el('ct_phone')?el('ct_phone').value.replace(/^\s+|\s+$/g,''):'';
+    R.tenantSince=el('ct_in')?el('ct_in').value:todayISO();
+  }
+  saveDB();
+  toast(blank?'ปล่อยห้องว่างแล้ว':'เปลี่ยนเป็นผู้เช่าใหม่แล้ว');
+  closeModal(); renderZone();
 }
 function roomDeposit(zid,rid){
   var Z=findZone(zid),R=findRoom(zid,rid); if(!R) return;
