@@ -69,6 +69,10 @@
   .pill.red{background:var(--red-soft);color:var(--red)}
   .pill.blue{background:#e7eefc;color:var(--blue)}
   .pill.teal{background:var(--primary-soft);color:var(--primary-d)}
+  .due-stat{font-weight:600;white-space:nowrap}
+  .due-stat.due-now{color:var(--red)}
+  .due-stat.due-soon{color:var(--amber)}
+  .due-stat.due-far{color:var(--muted);font-weight:400}
 
   .item{border:1px solid var(--line);border-radius:12px;padding:12px;margin-bottom:10px;background:var(--surface)}
   .item .hd{display:flex;align-items:flex-start;gap:10px}
@@ -803,6 +807,27 @@ function billDueDate(readISO, dueDay){
   var last=new Date(d.getFullYear(), d.getMonth()+1, 0).getDate();
   return isoFromDate(new Date(d.getFullYear(), d.getMonth(), Math.min(num(dueDay), last)));
 }
+var BILL_WIN=3; /* หน้าต่าง "ใกล้ครบกำหนด" ±กี่วัน ถึงจะติ๊กอัตโนมัติ */
+/* ประเมินว่าห้องนี้ถึง/ใกล้วันครบกำหนดเทียบกับวันที่จดมิเตอร์หรือยัง */
+function dueProximity(readISO, dueDay){
+  if(!dueDay) return { soon:true, label:'ไม่ระบุวันครบ', cls:'' };
+  var d=parseISO(readISO); if(!d) return { soon:true, label:'', cls:'' };
+  var last=new Date(d.getFullYear(), d.getMonth()+1, 0).getDate();
+  var dd=Math.min(num(dueDay), last);
+  var dom=d.getDate();
+  var diff=dom-dd;                 /* + = เลยกำหนดมาแล้ว, - = ยังไม่ถึง */
+  var ad=Math.abs(diff);
+  var circ=Math.min(ad, last-ad);  /* ระยะวนรอบเดือน (กันคร่อมสิ้นเดือน) */
+  var soon=circ<=BILL_WIN;
+  var label, cls;
+  if(diff===0){ label='ถึงกำหนดวันนี้'; cls='due-now'; }
+  else if(diff>0 && diff<=BILL_WIN){ label='เลยมา '+diff+' วัน'; cls='due-now'; }
+  else if(diff<0 && ad<=BILL_WIN){ label='อีก '+ad+' วัน'; cls='due-soon'; }
+  else if(circ<=BILL_WIN){ label='ใกล้กำหนด'; cls='due-soon'; }
+  else if(diff<0){ label='อีก '+ad+' วัน'; cls='due-far'; }
+  else { label='เลยมา '+diff+' วัน'; cls='due-far'; }
+  return { soon:soon, label:label, cls:cls };
+}
 /* วันครบของบิลที่ยังค้างเร็วที่สุด (ไว้เตือน) */
 function roomNextUnpaidDue(Z,R){
   var bills=R.bills||[], i, best=null;
@@ -983,9 +1008,19 @@ function roomInfo(zid,rid){
 var BILL_ZONE=null;
 function setBillZone(zid){ BILL_ZONE=zid; renderBill(); }
 function billSelectAll(on){ var cs=document.querySelectorAll('.bchk'),i; for(i=0;i<cs.length;i++) cs[i].checked=on; }
+function billSelectDue(){
+  var Z=findZone(BILL_ZONE); if(!Z) return; var rd=el('b_date').value, i;
+  for(i=0;i<Z.rooms.length;i++){ var R=Z.rooms[i]; var chk=el('bc_'+R.id); if(chk) chk.checked=dueProximity(rd, R.dueDay).soon; }
+  toast('ติ๊กเฉพาะห้องที่ถึง/ใกล้ครบกำหนดแล้ว');
+}
 function billUpdateDue(){
   var Z=findZone(BILL_ZONE); if(!Z) return; var rd=el('b_date').value, i;
-  for(i=0;i<Z.rooms.length;i++){ var R=Z.rooms[i]; var cell=el('bd_'+R.id); if(cell) cell.innerHTML=fmtBEshort(billDueDate(rd, R.dueDay)); }
+  for(i=0;i<Z.rooms.length;i++){ var R=Z.rooms[i];
+    var pr=dueProximity(rd, R.dueDay);
+    var cell=el('bd_'+R.id); if(cell) cell.innerHTML=fmtBEshort(billDueDate(rd, R.dueDay));
+    var st=el('bs_'+R.id); if(st){ st.innerHTML=esc(pr.label); st.className='mini due-stat '+pr.cls; }
+    var chk=el('bc_'+R.id); if(chk) chk.checked=pr.soon;   /* ปรับติ๊กตามวันที่ใหม่ */
+  }
 }
 function renderBill(){
   var p=el('page-bill'), i;
@@ -1000,13 +1035,16 @@ function renderBill(){
   var Z=findZone(BILL_ZONE);
   h+='<div class="card"><h2>กรอกเลขมิเตอร์ครั้งถัดไป</h2><div class="sub">ระบบจะคำนวณหน่วยที่ใช้ (เลขใหม่ − เลขเดิม) แล้วออกบิลให้อัตโนมัติ</div>';
   h+='<div class="field"><label class="f">วันที่จดมิเตอร์/ออกบิล</label><input class="inp" id="b_date" type="date" value="'+todayISO()+'" onchange="billUpdateDue()"></div>';
-  h+='<div class="mini" style="margin:-2px 2px 8px">ห้องในโซนเดียวกันครบกำหนดคนละวันได้ • ติ๊กเฉพาะห้องที่ต้องการออกบิลรอบนี้ '
-   +'<a href="javascript:void(0)" onclick="billSelectAll(true)">เลือกทั้งหมด</a> / <a href="javascript:void(0)" onclick="billSelectAll(false)">ไม่เลือก</a></div>';
-  h+='<table class="bill"><thead><tr><th>ออก?</th><th>ห้อง</th><th>ครบกำหนด</th><th>ไฟเดิม</th><th>ไฟใหม่</th><th>น้ำเดิม</th><th>น้ำใหม่</th></tr></thead><tbody>';
+  h+='<div class="mini" style="margin:-2px 2px 8px">ห้องในโซนเดียวกันครบกำหนดคนละวันได้ • ระบบ<b>ติ๊กให้อัตโนมัติเฉพาะห้องที่ถึง/ใกล้ครบกำหนด</b> (±'+BILL_WIN+' วัน) แก้เองได้ '
+   +'<a href="javascript:void(0)" onclick="billSelectAll(true)">เลือกทั้งหมด</a> / <a href="javascript:void(0)" onclick="billSelectAll(false)">ไม่เลือก</a> / <a href="javascript:void(0)" onclick="billSelectDue()">เฉพาะที่ถึงกำหนด</a></div>';
+  h+='<table class="bill"><thead><tr><th>ออก?</th><th>ห้อง</th><th>ครบกำหนด</th><th>สถานะ</th><th>ไฟเดิม</th><th>ไฟใหม่</th><th>น้ำเดิม</th><th>น้ำใหม่</th></tr></thead><tbody>';
+  var bdate0=todayISO();
   for(i=0;i<Z.rooms.length;i++){ var R=Z.rooms[i];
-    h+='<tr><td style="text-align:center"><input type="checkbox" class="bchk" id="bc_'+R.id+'" checked></td>';
+    var pr=dueProximity(bdate0, R.dueDay);
+    h+='<tr><td style="text-align:center"><input type="checkbox" class="bchk" id="bc_'+R.id+'" data-day="'+(R.dueDay||'')+'"'+(pr.soon?' checked':'')+'></td>';
     h+='<td>'+esc(R.no||'-')+'<div class="mini">'+esc(R.tenantName||'')+'</div></td>';
-    h+='<td class="mini" id="bd_'+R.id+'" data-day="'+(R.dueDay||'')+'">'+fmtBEshort(billDueDate(todayISO(),R.dueDay))+'</td>';
+    h+='<td class="mini" id="bd_'+R.id+'" data-day="'+(R.dueDay||'')+'">'+fmtBEshort(billDueDate(bdate0,R.dueDay))+'</td>';
+    h+='<td class="mini due-stat '+pr.cls+'" id="bs_'+R.id+'">'+esc(pr.label)+'</td>';
     h+='<td class="num">'+money(R.prevElec)+'</td>';
     h+='<td><input class="inp num" style="width:74px;padding:6px" inputmode="decimal" id="be_'+R.id+'" placeholder="'+money(R.prevElec)+'"></td>';
     h+='<td class="num">'+money(R.prevWater)+'</td>';
