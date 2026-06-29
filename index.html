@@ -399,6 +399,33 @@ function landAdvance(L){
   L.periodStart = addMonths(L.periodStart, freqMonths(L.frequency));
   L.dueOverride = null;
 }
+/* วันครบกำหนดจ่ายของรอบที่เริ่มวันที่ ps (ใช้ payOffset/payDay ของ lease เดิม) */
+function landDueFor(ps, L){
+  var base=addMonths(ps, num(L.payOffsetMonths||0));
+  return setDay(base, num(L.payDay||0));
+}
+/* ขึ้นรอบใหม่อัตโนมัติ: ถ้ารอบปัจจุบันจ่ายครบแล้ว และถึงวันครบของรอบถัดไป → เลื่อนรอบ + เพิ่มค่าเช่า */
+function autoRollLease(L){
+  if(!L.periodStart || num(L.rent)<=0) return false;
+  var changed=false, guard=0;
+  while(num(L.outstanding)<=0 && guard<60){
+    var nextStart=addMonths(L.periodStart, freqMonths(L.frequency));
+    var nextDue=landDueFor(nextStart, L);
+    if(daysBetween(todayISO(), nextDue) > 0) break;  // รอบถัดไปยังไม่ถึงกำหนด → ยังไม่ขึ้น
+    L.periodStart=nextStart; L.dueOverride=null;
+    L.outstanding=num(L.outstanding)+num(L.rent);
+    if(!L.autoRollLog) L.autoRollLog=[];
+    L.autoRollLog.push({at:todayISO(), periodStart:nextStart, due:nextDue, rent:num(L.rent)});
+    changed=true; guard++;
+  }
+  return changed;
+}
+function autoRollAll(){
+  var n=0,i,j;
+  for(i=0;i<DB.lands.length;i++){ var ls=DB.lands[i].leases||[]; for(j=0;j<ls.length;j++){ if(autoRollLease(ls[j])) n++; } }
+  if(n>0) saveDB();
+  return n;
+}
 /* หาวันเริ่มรอบที่ครอบคลุมวันนี้ จาก anchor (ปี,เดือน0) และความถี่ F เดือน */
 function alignedStart(F, anchorY, anchorM){
   var t=new Date();
@@ -480,6 +507,7 @@ function landStatus(L){
    ============================================================ */
 function renderDash(){
   var p=el('page-dash');
+  var rolled=autoRollAll();
   var totalLandOutstanding=0, totalRoomOutstanding=0, dueSoon=[], overdue=[], depositHeld=0;
   var i,j;
   for(i=0;i<DB.lands.length;i++){
@@ -512,6 +540,7 @@ function renderDash(){
 
   var h='';
   h+='<div class="section-title"><h2>ภาพรวม</h2><div class="spacer"></div><span class="mini">วันนี้ '+fmtBE(todayISO())+'</span></div>';
+  if(rolled>0) h+='<div class="hint" style="background:var(--primary-soft);color:var(--primary-d);border:0">🔄 ขึ้นรอบเช่าใหม่อัตโนมัติให้ '+rolled+' รายการที่ดิน (ถึงกำหนดรอบถัดไปแล้ว) — ดูในรายการต้องตามด้านล่าง</div>';
   h+='<div class="stat">';
   h+=' <div class="s teal"><div class="n">'+DB.lands.length+'</div><div class="l">แปลงที่ดิน</div></div>';
   h+=' <div class="s teal"><div class="n">'+roomsCount+'</div><div class="l">ห้องเช่า ('+DB.zones.length+' โซน)</div></div>';
@@ -586,6 +615,7 @@ function migratePlot(P){
 }
 
 function renderLand(){
+  autoRollAll();
   var p=el('page-land'), i, j;
   var h='';
   h+='<div class="section-title"><h2>ที่ดินเช่า</h2><div class="spacer"></div><button class="btn sm" onclick="plotForm()">+ เพิ่มแปลง</button></div>';
